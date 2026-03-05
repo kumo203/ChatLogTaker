@@ -25,9 +25,26 @@ var page = await context.NewPageAsync();
 Console.WriteLine("Navigating to Microsoft Teams...");
 await page.GotoAsync("https://teams.microsoft.com");
 await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+await page.WaitForTimeoutAsync(opts.Debug ? 60_000 : 3_000);
 
-// Give Teams a moment to settle after session restore
-await page.WaitForTimeoutAsync(3_000);
+// If the session was stale, Teams will redirect to the login page.
+// Delete the bad state and re-run with --login.
+if (page.Url.Contains("login.microsoftonline.com"))
+{
+    File.Delete("auth/state.json");
+    Console.WriteLine("Saved session has expired. Please re-run with --login to authenticate.");
+    return;
+}
+
+// --debug: save screenshot + full page HTML to debug/ so we can identify selectors
+if (opts.Debug)
+{
+    Directory.CreateDirectory("debug");
+    await page.ScreenshotAsync(new() { Path = "debug/teams.png", FullPage = true });
+    await File.WriteAllTextAsync("debug/teams.html", await page.ContentAsync());
+    Console.WriteLine("Debug files saved to debug/teams.png and debug/teams.html");
+    return;
+}
 
 var navigator = new TeamsNavigator(page);
 var extractor  = new MessageExtractor(page);
@@ -75,7 +92,7 @@ foreach (var ch in channels)
 Console.WriteLine($"\nDone. Output written to: {Path.GetFullPath(opts.OutputDir)}");
 
 // ── CLI options ───────────────────────────────────────────────────────────────
-record CliOptions(bool Login, bool Headed, string OutputDir, int Limit)
+record CliOptions(bool Login, bool Headed, bool Debug, string OutputDir, int Limit)
 {
     public static CliOptions? Parse(string[] args)
     {
@@ -91,13 +108,15 @@ record CliOptions(bool Login, bool Headed, string OutputDir, int Limit)
                   --headed          Show browser window during collection
                   --output <dir>    Output directory  (default: ./output)
                   --limit <n>       Max messages per chat, 0 = all  (default: 0)
+                  --debug           Save screenshot + HTML to debug/ then exit
                   --help            Show this help
                 """);
             return null;
         }
 
         bool login  = args.Contains("--login");
-        bool headed = args.Contains("--headed");
+        bool headed = args.Contains("--headed") || args.Contains("--debug");
+        bool debug  = args.Contains("--debug");
 
         var outputDir = "output";
         var outIdx = Array.IndexOf(args, "--output");
@@ -109,6 +128,6 @@ record CliOptions(bool Login, bool Headed, string OutputDir, int Limit)
         if (limIdx >= 0 && limIdx + 1 < args.Length)
             int.TryParse(args[limIdx + 1], out limit);
 
-        return new CliOptions(login, headed, outputDir, limit);
+        return new CliOptions(login, headed, debug, outputDir, limit);
     }
 }

@@ -10,7 +10,8 @@ public class SessionManager : IAsyncDisposable
     public bool HasSavedSession => File.Exists(StateFile);
 
     /// <summary>
-    /// Opens a headed browser for the user to log in, then saves the session state.
+    /// Opens a headed browser for the user to log in, then auto-saves the session
+    /// once Teams finishes loading (no manual Enter press needed).
     /// </summary>
     public async Task LoginAndSaveAsync(IPlaywright playwright)
     {
@@ -23,9 +24,45 @@ public class SessionManager : IAsyncDisposable
         await page.GotoAsync("https://teams.microsoft.com");
 
         Console.WriteLine("=== Login Required ===");
-        Console.WriteLine("Complete your login in the browser window that just opened.");
-        Console.WriteLine("Once the Teams interface is fully loaded, press Enter here to save the session.");
-        Console.ReadLine();
+        Console.WriteLine("A browser window has opened. Please log in to Microsoft Teams.");
+        Console.WriteLine("The session will be saved automatically once you are logged in...");
+
+        // Strategy: after the initial navigation, Teams immediately redirects to
+        // login.microsoftonline.com. We wait for that redirect to occur (up to 10s),
+        // then wait for the URL to come back to teams.microsoft.com, which means
+        // login completed. We then wait for the network to idle before saving.
+
+        // Step 1: wait for the login redirect to happen
+        Console.WriteLine("  Waiting for login page...");
+        try
+        {
+            await page.WaitForURLAsync(
+                url => !url.StartsWith("https://teams.microsoft.com"),
+                new() { Timeout = 10_000 });
+        }
+        catch (TimeoutException)
+        {
+            // Might already be logged in — no redirect occurred, continue
+        }
+
+        // Step 2: wait for redirect back to teams.microsoft.com (user completes login)
+        Console.WriteLine("  Waiting for you to complete login in the browser...");
+        try
+        {
+            await page.WaitForURLAsync(
+                url => url.StartsWith("https://teams.microsoft.com"),
+                new() { Timeout = 300_000 });   // 5 minutes
+        }
+        catch (TimeoutException)
+        {
+            Console.WriteLine("Timed out waiting for login. Please try --login again.");
+            return;
+        }
+
+        // Step 3: wait for Teams to finish loading
+        Console.WriteLine("  Login detected. Waiting for Teams to load...");
+        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+        await page.WaitForTimeoutAsync(4_000);
 
         await context.StorageStateAsync(new() { Path = StateFile });
         Console.WriteLine($"Session saved to: {StateFile}");
